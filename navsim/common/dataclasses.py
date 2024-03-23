@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+
+import io
 import os
+
 from pathlib import Path
 import numpy as np
 import numpy.typing as npt
@@ -9,12 +12,14 @@ from PIL import Image
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
     convert_absolute_to_relative_se2_array,
 )
+
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.database.utils.pointclouds.lidar import LidarPointCloud
 
 from pyquaternion import Quaternion
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, BinaryIO
 
 import warnings
 
@@ -49,7 +54,6 @@ class Cameras:
 
         data_dict: Dict[str, Camera] = {}
         for camera_name in camera_dict.keys():
-            # TODO: adapt for complete OpenScenes data
             image_path = (
                 sensor_blobs_path
                 / camera_dict[camera_name]["data_path"]
@@ -76,10 +80,24 @@ class Cameras:
 
 @dataclass
 class Lidar:
-    merged_pc: npt.NDArray[np.float32]
+    
+    # merged lidar pointcloud as (6,n) float32 array with n points
+    # first axis: (x, y, z, intensity, ring, lidar_id)
+    merged_pc: npt.NDArray[np.float32] 
 
-    # TODO: add lidar parameters
-    parameters: Optional[Any] = None
+    
+    @staticmethod
+    def _load_bytes(lidar_path: Path) -> BinaryIO:
+        with open(lidar_path, 'rb') as fp:
+            return io.BytesIO(fp.read())
+        
+    @classmethod
+    def from_paths(cls, sensor_blobs_path: Path, lidar_path: Path) -> Lidar:
+        
+        global_lidar_path = sensor_blobs_path / lidar_path
+        merged_pc = LidarPointCloud.from_buffer(cls._load_bytes(global_lidar_path), 'pcd').points
+        
+        return Lidar(merged_pc)
 
 
 @dataclass
@@ -142,10 +160,9 @@ class AgentInput:
                 cameras.append(Cameras.from_camera_dict(sensor_blobs_path, scene_dict_list[frame_idx]["cams"]))
 
             if include_lidar:
-                # TODO: Add lidar data
-                warnings.warn(f"Lidar currently not available in OpenScenes!")
-                lidars = None
-
+                lidar_path = Path(scene_dict_list[frame_idx]["lidar_path"])
+                lidars.append(Lidar.from_paths(sensor_blobs_path, lidar_path))
+                
         return AgentInput(ego_statuses, cameras, lidars)
 
 
@@ -292,11 +309,42 @@ class Scene:
                 cameras.append(self.frames[frame_idx].cameras)
 
             if include_lidar:
-                # TODO: Add lidar data
-                warnings.warn(f"Lidar currently not available in OpenScenes!")
-                lidars = None
-
+                lidars.append(self.frames[frame_idx].lidar)
+                
         return AgentInput(ego_statuses, cameras, lidars)
+    
+    @classmethod
+    def _build_annotations(
+        cls,
+        scene_frame: Dict,
+    ) -> Annotations:
+        return Annotations(
+            boxes=scene_frame["anns"]["gt_boxes"],
+            names=scene_frame["anns"]["gt_names"],
+            velocity_3d=scene_frame["anns"]["gt_velocity_3d"],
+            instance_tokens=scene_frame["anns"]["instance_tokens"],
+            track_tokens=scene_frame["anns"]["track_tokens"],
+        )
+    
+    @classmethod
+    def _build_ego_status(
+        cls,
+        scene_frame: Dict,
+    ) -> EgoStatus:
+        ego_translation = scene_frame["ego2global_translation"]
+        ego_quaternion = Quaternion(*scene_frame["ego2global_rotation"])
+        global_ego_pose = np.array(
+            [ego_translation[0], ego_translation[1], ego_quaternion.yaw_pitch_roll[0]],
+            dtype=np.float64,
+        )
+        ego_dynamic_state = scene_frame["ego_dynamic_state"]
+        return EgoStatus(
+            ego_pose=global_ego_pose,
+            ego_velocity=np.array(ego_dynamic_state[:2], dtype=np.float32),
+            ego_acceleration=np.array(ego_dynamic_state[2:], dtype=np.float32),
+            driving_command=scene_frame["driving_command"],
+            in_global_frame=True,
+        )
 
     @classmethod
     def from_scene_dict_list(
@@ -321,29 +369,8 @@ class Scene:
 
         frames: List[Frame] = []
         for frame_idx in range(len(scene_dict_list)):
-
-            ego_translation = scene_dict_list[frame_idx]["ego2global_translation"]
-            ego_quaternion = Quaternion(*scene_dict_list[frame_idx]["ego2global_rotation"])
-            global_ego_pose = np.array(
-                [ego_translation[0], ego_translation[1], ego_quaternion.yaw_pitch_roll[0]],
-                dtype=np.float64,
-            )
-            ego_dynamic_state = scene_dict_list[frame_idx]["ego_dynamic_state"]
-            global_ego_status = EgoStatus(
-                ego_pose=global_ego_pose,
-                ego_velocity=np.array(ego_dynamic_state[:2], dtype=np.float32),
-                ego_acceleration=np.array(ego_dynamic_state[2:], dtype=np.float32),
-                driving_command=scene_dict_list[frame_idx]["driving_command"],
-                in_global_frame=True,
-            )
-
-            annotations = Annotations(
-                boxes=scene_dict_list[frame_idx]["anns"]["gt_boxes"],
-                names=scene_dict_list[frame_idx]["anns"]["gt_names"],
-                velocity_3d=scene_dict_list[frame_idx]["anns"]["gt_velocity_3d"],
-                instance_tokens=scene_dict_list[frame_idx]["anns"]["instance_tokens"],
-                track_tokens=scene_dict_list[frame_idx]["anns"]["track_tokens"],
-            )
+            global_ego_status = cls._build_ego_status(scene_dict_list[frame_idx])
+            annotations = cls._build_annotations(scene_dict_list[frame_idx])
 
             if "camera" in sensor_modalities:
                 cameras = Cameras.from_camera_dict(sensor_blobs_path, scene_dict_list[frame_idx]["cams"])
@@ -351,9 +378,8 @@ class Scene:
                 cameras = None
 
             if "lidar" in sensor_modalities:
-                # TODO: Add lidar data
-                warnings.warn(f"Lidar currently not available in OpenScenes!")
-                lidar = None
+                lidar_path = Path(scene_dict_list[frame_idx]["lidar_path"])
+                lidar = Lidar.from_paths(sensor_blobs_path, lidar_path)
             else:
                 lidar = None
 
@@ -384,7 +410,6 @@ class SceneFilter:
     
     # NOTE: Not implemented
     tokens: Optional[List[str]] = None
-    map_names: Optional[List[str]] = None
     
     @property
     def num_frames(self):
