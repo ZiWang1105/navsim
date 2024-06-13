@@ -267,7 +267,7 @@ class MetricCacheProcessor:
         save_dict['traffic_light_information'] = traffic_light_information
         save_dict['map_polygon_objects'] = map_objects
         
-        self.save_path = os.path.join(self._cache_path, 'lctgen_scenarios')
+        self.save_path = os.path.join(self._cache_path, 'openscene_scenarios')
         os.makedirs(self.save_path, exist_ok=True)
         save_file = os.path.join(self.save_path, "{}.pkl".format(scenario.token))
         with open(save_file, "wb") as f:
@@ -348,8 +348,8 @@ class MetricCacheProcessor:
         
         
         
-        import ipdb
-        ipdb.set_trace()
+        # import ipdb
+        # ipdb.set_trace()
 
         # return metadata
         return CacheMetadataEntry(file_name)
