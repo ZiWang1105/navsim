@@ -1,5 +1,5 @@
 import pathlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from nuplan.planning.training.experiments.cache_metadata_entry import CacheMetadataEntry
 from nuplan.planning.scenario_builder.abstract_scenario import AbstractScenario
@@ -29,17 +29,16 @@ from navsim.planning.metric_caching.metric_caching_utils import StateInterpolato
 
 from nuplan.common.actor_state.agent import Agent
 from nuplan.common.actor_state.static_object import StaticObject
-import os
+
 import numpy as np
-import pickle
+
 from nuplan.common.actor_state.tracked_objects_types import (
     AGENT_TYPES,
 )
 from nuplan.common.actor_state.oriented_box import OrientedBox
 from nuplan.common.actor_state.state_representation import StateSE2, StateVector2D
 from nuplan.common.actor_state.tracked_objects import TrackedObjects
-from nuplan.common.maps.abstract_map import AbstractMap
-from nuplan.common.maps.maps_datatypes import SemanticMapLayer
+
 
 class MetricCacheProcessor:
     """
@@ -110,6 +109,7 @@ class MetricCacheProcessor:
         return planner_input, planner_initialization
 
     def _interpolate_gt_observation(self, scenario: AbstractScenario) -> PDMObservation:
+
         # TODO: add to config
         state_size = 6  # (time, x, y, heading, velo_x, velo_y)
 
@@ -134,7 +134,6 @@ class MetricCacheProcessor:
 
         detection_tracks_states: Dict[str, Any] = {}
         unique_detection_tracks: Dict[str, Any] = {}
-        agent_types: Dict[str, str] = {}  # Dictionary to store agent types
 
         for time_s, detection_track in zip(relative_time_s, gt_detection_tracks):
 
@@ -162,7 +161,6 @@ class MetricCacheProcessor:
                 if token not in detection_tracks_states.keys():
                     detection_tracks_states[token] = [tracked_state]
                     unique_detection_tracks[token] = tracked_object
-                    agent_types[token] = tracked_object.tracked_object_type
 
                 # object already existed
                 else:
@@ -225,59 +223,6 @@ class MetricCacheProcessor:
                 DetectionsTracks(TrackedObjects(interpolated_tracks))
             )
 
-        # Interpolate ego states
-        ego_states = [scenario.get_ego_state_at_iteration(iteration) for iteration in gt_indices]
-
-        ego_interpolators = StateInterpolator(
-            np.array(
-                [[time_s, ego.center.x, ego.center.y, ego.center.heading, 
-                  ego.dynamic_car_state.rear_axle_velocity_2d.x, ego.dynamic_car_state.rear_axle_velocity_2d.y]
-                 for time_s, ego in zip(relative_time_s, ego_states)],
-                dtype=np.float64
-            )
-        )
-
-        interpolated_ego_states = []
-        for time_s in interpolated_time_s:
-            interpolated_state = ego_interpolators.interpolate(time_s)
-            if interpolated_state is not None:
-                interpolated_ego_states.append(interpolated_state)
-        # import ipdb; ipdb.set_trace()
-        # Save interpolated tracks and agent types
-        # self.save_path = '/mnt/data3/ziwang/lctgen/scenarios'
-        # interpolated_tracks_file = os.path.join(self.save_path, "interpolated_tracks.pkl")
-        # agent_types_file = os.path.join(self.save_path, "agent_types.pkl")
-        # interpolated_ego_states_file = os.path.join(self.save_path, "interpolated_ego_states.pkl")
-        # with open(interpolated_tracks_file, "wb") as f:
-        #     pickle.dump(interpolated_detection_tracks, f)
-        # with open(agent_types_file, "wb") as f:
-        #     pickle.dump(agent_types, f)
-        # with open(interpolated_ego_states_file, "wb") as f:
-        #     pickle.dump(interpolated_ego_states, f)
-            
-        traffic_light_information = self._save_traffic_light_information(scenario, gt_indices)
-            
-        ego_state = scenario.get_ego_state_at_iteration(0)  
-        layers = [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR, SemanticMapLayer.CROSSWALK]  # Example layers, use as needed
-        map_objects = self._save_map_polygon_objects(scenario.map_api, ego_state.center, layers)
-            
-        save_dict = {}
-        save_dict['interpolated_tracks'] = interpolated_detection_tracks
-        save_dict['interpolated_ego_states'] = interpolated_ego_states
-        save_dict['traffic_light_information'] = traffic_light_information
-        save_dict['map_polygon_objects'] = map_objects
-        
-        self.save_path = os.path.join(self._cache_path, 'lctgen_scenarios')
-        os.makedirs(self.save_path, exist_ok=True)
-        save_file = os.path.join(self.save_path, "{}.pkl".format(scenario.token))
-        with open(save_file, "wb") as f:
-            pickle.dump(save_dict, f)
-        
-        
-        ego_state = scenario.get_ego_state_at_iteration(0)  
-        layers = [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR, SemanticMapLayer.CROSSWALK]  # Example layers, use as needed
-        self._save_map_polygon_objects(scenario.map_api, ego_state.center, layers)
-
         # convert to pdm observation
         pdm_observation = PDMObservation(
             self._future_sampling,
@@ -287,31 +232,6 @@ class MetricCacheProcessor:
         )
         pdm_observation.update_detections_tracks(interpolated_detection_tracks)
         return pdm_observation
-
-    def _save_map_polygon_objects(self, map_api: AbstractMap, ego_pose: StateSE2, layers: List[SemanticMapLayer]):
-        map_object_dict = map_api.get_proximal_map_objects(
-            point=ego_pose.point, radius=self._map_radius, layers=layers
-        )
-        # map_polygon_objects_file = os.path.join(self.save_path, "map_polygon_objects.pkl")
-        # with open(map_polygon_objects_file, "wb") as f:
-        #     pickle.dump(map_object_dict, f)
-        
-        return map_object_dict
-
-    def _save_traffic_light_information(self, scenario: AbstractScenario, iterations: List):
-        traffic_light_data = []
-
-        for iteration in iterations:
-            # import ipdb
-            # ipdb.set_trace()
-            traffic_lights = list(scenario.get_traffic_light_status_at_iteration(iteration))
-            # print(len(traffic_lights))
-            traffic_light_data.append(traffic_lights)
-        
-        # traffic_light_file = os.path.join(self.save_path, "traffic_light_info.pkl")
-        # with open(traffic_light_file, "wb") as f:
-        #     pickle.dump(traffic_light_data, f)
-        return traffic_light_data
 
     def compute_metric_cache(self, scenario: AbstractScenario) -> Optional[CacheMetadataEntry]:
 
@@ -323,14 +243,16 @@ class MetricCacheProcessor:
             / "metric_cache.pkl"
         )
 
+        if file_name.exists() and not self._force_feature_computation:
+            return CacheMetadataEntry(file_name)
+
         # init and run PDM-Closed
         planner_input, planner_initialization = self._get_planner_inputs(scenario)
         self._pdm_closed.initialize(planner_initialization)
         pdm_closed_trajectory = self._pdm_closed.compute_planner_trajectory(planner_input)
 
         observation = self._interpolate_gt_observation(scenario)
-        # import ipdb 
-        # ipdb.set_trace()
+
         # save and dump features
         MetricCache(
             file_name,
@@ -341,15 +263,6 @@ class MetricCacheProcessor:
             list(self._pdm_closed._route_lane_dict.keys()),
             self._pdm_closed._drivable_area_map,
         ).dump()
-
-        # centerline_file = os.path.join(self.save_path, "centerline.pkl")
-        # with open(centerline_file, "wb") as f:
-        #     pickle.dump(self._pdm_closed._centerline._states_se2_array, f)
-        
-        
-        
-        import ipdb
-        ipdb.set_trace()
 
         # return metadata
         return CacheMetadataEntry(file_name)
